@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Bookmark Health Checker",
+  "version": "1.0.0",
+  "description": "Kiểm tra và quản lý bookmark không truy cập được, phân loại theo mã lỗi HTTP",
+  "permissions": ["bookmarks", "tabs"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
