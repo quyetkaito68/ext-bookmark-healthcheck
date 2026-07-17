@@ -1,7 +1,6 @@
 'use strict';
 
 import { getAllBookmarks, removeBookmark } from '../services/bookmarks.js';
-import { scanConcurrently } from '../services/urlChecker.js';
 import { codeLabel } from '../utils/badge.js';
 import { esc, renderPath, createRow } from '../utils/dom.js';
 
@@ -33,6 +32,10 @@ const confirmModal   = document.getElementById('confirmModal');
 const confirmMsg     = document.getElementById('confirmMsg');
 const confirmYes     = document.getElementById('confirmYes');
 const confirmNo      = document.getElementById('confirmNo');
+const contextMenu    = document.getElementById('contextMenu');
+const ctxDelete      = document.getElementById('ctxDelete');
+
+let ctxTargetId = null;
 
 // ─── Row rendering ────────────────────────────────────────────────────────────
 function appendRow(item) {
@@ -124,6 +127,25 @@ function applyFilter() {
 }
 
 // ─── Scan ─────────────────────────────────────────────────────────────────────
+function scanViaBackground(bookmarks, concurrency, onResult, onTick) {
+  return new Promise((resolve, reject) => {
+    const port = chrome.runtime.connect({ name: 'scan' });
+
+    port.onMessage.addListener(msg => {
+      if (msg.type === 'result') onResult(msg.item);
+      if (msg.type === 'tick')   onTick(msg.done, msg.total);
+      if (msg.type === 'done')   { port.disconnect(); resolve(); }
+    });
+
+    port.onDisconnect.addListener(() => {
+      const err = chrome.runtime.lastError;
+      if (err) reject(new Error(err.message));
+    });
+
+    port.postMessage({ action: 'start', bookmarks, concurrency });
+  });
+}
+
 async function startScan() {
   if (isScanning) return;
   isScanning  = true;
@@ -149,7 +171,7 @@ async function startScan() {
     scannedTotal = bookmarks.length;
     progressText.textContent = `Đang quét ${scannedTotal.toLocaleString()} bookmark…`;
 
-    await scanConcurrently(
+    await scanViaBackground(
       bookmarks,
       50,
       item => {
@@ -235,20 +257,98 @@ selectAllCb.addEventListener('change', () => {
 
 filterCode.addEventListener('change', applyFilter);
 
+let pendingConfirmAction = null;
+
 deleteBtn.addEventListener('click', () => {
   if (selectedIds.size === 0) return;
   confirmMsg.textContent =
     `Bạn có chắc muốn xóa ${selectedIds.size} bookmark đã chọn không? Thao tác này không thể hoàn tác.`;
   confirmModal.classList.remove('hidden');
+  pendingConfirmAction = performDelete;
 });
 
-confirmYes.addEventListener('click', performDelete);
-confirmNo.addEventListener('click',  () => confirmModal.classList.add('hidden'));
+confirmYes.addEventListener('click', () => {
+  if (pendingConfirmAction) {
+    confirmModal.classList.add('hidden');
+    pendingConfirmAction();
+    pendingConfirmAction = null;
+  }
+});
+confirmNo.addEventListener('click', () => {
+  pendingConfirmAction = null;
+  confirmModal.classList.add('hidden');
+});
 
 confirmModal.addEventListener('click', e => {
-  if (e.target === confirmModal) confirmModal.classList.add('hidden');
+  if (e.target === confirmModal) {
+    confirmModal.classList.add('hidden');
+    pendingConfirmAction = null;
+  }
 });
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') confirmModal.classList.add('hidden');
+  if (e.key === 'Escape') {
+    confirmModal.classList.add('hidden');
+    pendingConfirmAction = null;
+    hideContextMenu();
+  }
+});
+
+// ─── Context Menu ───────────────────────────────────────────────────────────
+function showContextMenu(x, y, bmId) {
+  ctxTargetId = bmId;
+  contextMenu.style.left = x + 'px';
+  contextMenu.style.top  = y + 'px';
+  contextMenu.classList.remove('hidden');
+
+  const rect = contextMenu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) {
+    contextMenu.style.left = (x - rect.width) + 'px';
+  }
+  if (rect.bottom > window.innerHeight) {
+    contextMenu.style.top = (y - rect.height) + 'px';
+  }
+}
+
+function hideContextMenu() {
+  contextMenu.classList.add('hidden');
+  ctxTargetId = null;
+}
+
+resultsTbody.addEventListener('contextmenu', e => {
+  const tr = e.target.closest('tr.result-row');
+  if (!tr) return;
+  e.preventDefault();
+  showContextMenu(e.clientX, e.clientY, tr.dataset.id);
+});
+
+document.addEventListener('click', e => {
+  if (!contextMenu.contains(e.target)) hideContextMenu();
+});
+
+ctxDelete.addEventListener('click', () => {
+  if (!ctxTargetId) return;
+  const bm = allResults.find(r => r.id === ctxTargetId);
+  if (!bm) { hideContextMenu(); return; }
+  confirmMsg.textContent =
+    `Bạn có chắc muốn xóa bookmark "${bm.title}" không? Thao tác này không thể hoàn tác.`;
+  contextMenu.classList.add('hidden');
+  confirmModal.classList.remove('hidden');
+
+  pendingConfirmAction = async () => {
+    await removeBookmark(bm.id);
+    const tr = resultsTbody.querySelector(`tr[data-id="${CSS.escape(bm.id)}"]`);
+    if (tr) tr.remove();
+    allResults = allResults.filter(r => r.id !== bm.id);
+    selectedIds.delete(bm.id);
+    syncSelectAll();
+    refreshDeleteBtn();
+    populateFilter();
+    refreshResultCount();
+    if (allResults.length === 0) {
+      resultsTable.classList.add('hidden');
+      emptyState.classList.remove('hidden');
+      toolbar.classList.add('hidden');
+    }
+  };
 });

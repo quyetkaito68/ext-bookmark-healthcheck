@@ -5,6 +5,10 @@
   "description": "Kiểm tra và quản lý bookmark không truy cập được, phân loại theo mã lỗi HTTP",
   "permissions": ["bookmarks", "tabs"],
   "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background/background.js",
+    "type": "module"
+  },
   "action": {
     "default_popup": "popup/popup.html"
   }
